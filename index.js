@@ -98,9 +98,25 @@ function buildKeyboard(lang) {
 }
 
 // ---- Gemini API call (free tier) ----
-async function askGemini(prompt) {
-  const result = await geminiModel.generateContent(prompt);
-  return result.response.text();
+// Google's servers occasionally return a temporary "503 high demand" error.
+// This retries a few times with a short delay before giving up, instead of
+// failing on the very first hiccup.
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function askGemini(prompt, attempt = 1) {
+  try {
+    const result = await geminiModel.generateContent(prompt);
+    return result.response.text();
+  } catch (err) {
+    const isOverloaded = err?.status === 503 || /overload|high demand|unavailable/i.test(err?.message || '');
+    if (isOverloaded && attempt < 3) {
+      await sleep(2000 * attempt); // 2s, then 4s
+      return askGemini(prompt, attempt + 1);
+    }
+    throw err;
+  }
 }
 
 function categoryPrompt(category, product, lang) {
@@ -180,7 +196,13 @@ CATEGORIES.forEach((cat) => {
       await ctx.reply(result, buildKeyboard(session.lang));
     } catch (err) {
       console.error(err);
-      await ctx.reply('⚠️ Error: ' + err.message);
+      const busyMsg = {
+        ka: '⚠️ AI სერვერი ამჟამად გადატვირთულია. სცადე კიდევ რამდენიმე წამში, ან დააჭირე ღილაკს თავიდან.',
+        ru: '⚠️ Сервер AI сейчас перегружен. Попробуйте ещё раз через пару секунд или нажмите кнопку снова.',
+        en: '⚠️ The AI server is currently busy. Please try again in a few seconds, or tap the button again.'
+      };
+      const isOverloaded = err?.status === 503 || /overload|high demand|unavailable/i.test(err?.message || '');
+      await ctx.reply(isOverloaded ? busyMsg[session.lang] : '⚠️ Error: ' + err.message, buildKeyboard(session.lang));
     }
   });
 });
