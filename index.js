@@ -15,9 +15,11 @@ if (!process.env.GEMINI_API_KEY) {
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-// Free-tier Gemini model. If this ever stops working, open https://aistudio.google.com/app/apikey ,
-// check which model is currently listed as "free", and change the name below to match.
-const geminiModel = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+// 'gemini-flash-latest' is an alias that Google automatically points to its current
+// Flash model, so this keeps working even after Google retires older model names
+// (which is what caused the previous error). If it ever stops working, open
+// https://ai.google.dev/gemini-api/docs/models and pick the current Flash model name.
+const geminiModel = genAI.getGenerativeModel({ model: 'gemini-flash-latest' });
 
 // Simple in-memory session store: chatId -> { product, lang }
 // NOTE: this resets whenever the bot restarts (fine for a first version).
