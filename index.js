@@ -15,11 +15,13 @@ if (!process.env.GEMINI_API_KEY) {
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-// 'gemini-flash-latest' is an alias that Google automatically points to its current
-// Flash model, so this keeps working even after Google retires older model names
-// (which is what caused the previous error). If it ever stops working, open
-// https://ai.google.dev/gemini-api/docs/models and pick the current Flash model name.
-const geminiModel = genAI.getGenerativeModel({ model: 'gemini-flash-latest' });
+
+// Google's Flash model occasionally returns "503 high demand" errors during peak
+// hours (this is a known, temporary Google-side issue, not specific to this bot).
+// We try the main model first, and if it's overloaded, fall back to the lighter
+// "lite" model, which tends to be less congested.
+const MODEL_NAMES = ['gemini-flash-latest', 'gemini-flash-lite-latest'];
+const geminiModels = MODEL_NAMES.map((name) => genAI.getGenerativeModel({ model: name }));
 
 // Simple in-memory session store: chatId -> { product, lang }
 // NOTE: this resets whenever the bot restarts (fine for a first version).
@@ -97,26 +99,30 @@ function buildKeyboard(lang) {
   ]);
 }
 
-// ---- Gemini API call (free tier) ----
-// Google's servers occasionally return a temporary "503 high demand" error.
-// This retries a few times with a short delay before giving up, instead of
-// failing on the very first hiccup.
+// ---- Gemini API call (free tier), with retry + model fallback ----
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function askGemini(prompt, attempt = 1) {
-  try {
-    const result = await geminiModel.generateContent(prompt);
-    return result.response.text();
-  } catch (err) {
-    const isOverloaded = err?.status === 503 || /overload|high demand|unavailable/i.test(err?.message || '');
-    if (isOverloaded && attempt < 3) {
-      await sleep(2000 * attempt); // 2s, then 4s
-      return askGemini(prompt, attempt + 1);
+function isOverloadedError(err) {
+  return err?.status === 503 || /overload|high demand|unavailable/i.test(err?.message || '');
+}
+
+async function askGemini(prompt) {
+  let lastErr;
+  for (const model of geminiModels) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const result = await model.generateContent(prompt);
+        return result.response.text();
+      } catch (err) {
+        lastErr = err;
+        if (!isOverloadedError(err)) throw err; // real error (bad key, etc.) — stop immediately
+        await sleep(1500 * attempt); // 1.5s, then 3s, before retrying / trying next model
+      }
     }
-    throw err;
   }
+  throw lastErr; // both models failed after retries
 }
 
 function categoryPrompt(category, product, lang) {
@@ -201,7 +207,7 @@ CATEGORIES.forEach((cat) => {
         ru: '⚠️ Сервер AI сейчас перегружен. Попробуйте ещё раз через пару секунд или нажмите кнопку снова.',
         en: '⚠️ The AI server is currently busy. Please try again in a few seconds, or tap the button again.'
       };
-      const isOverloaded = err?.status === 503 || /overload|high demand|unavailable/i.test(err?.message || '');
+      const isOverloaded = isOverloadedError(err);
       await ctx.reply(isOverloaded ? busyMsg[session.lang] : '⚠️ Error: ' + err.message, buildKeyboard(session.lang));
     }
   });
